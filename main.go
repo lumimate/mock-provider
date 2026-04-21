@@ -24,12 +24,13 @@ type Message struct {
 }
 
 type ChatCompletionResponse struct {
-	ID      string                 `json:"id"`
-	Object  string                 `json:"object"`
-	Created int64                  `json:"created"`
-	Model   string                 `json:"model"`
-	Choices []ChatCompletionChoice `json:"choices"`
-	Usage   Usage                  `json:"usage"`
+	ID           string                 `json:"id"`
+	Object       string                 `json:"object"`
+	Created      int64                  `json:"created"`
+	Model        string                 `json:"model"`
+	Choices      []ChatCompletionChoice `json:"choices"`
+	Usage        Usage                  `json:"usage"`
+	LatencyTrace LatencyTrace           `json:"latency_trace"`
 }
 
 type ChatCompletionChoice struct {
@@ -39,12 +40,13 @@ type ChatCompletionChoice struct {
 }
 
 type ChatCompletionStreamResponse struct {
-	ID      string                       `json:"id"`
-	Object  string                       `json:"object"`
-	Created int64                        `json:"created"`
-	Model   string                       `json:"model"`
-	Choices []ChatCompletionStreamChoice `json:"choices"`
-	Usage   *Usage                       `json:"usage,omitempty"`
+	ID           string                       `json:"id"`
+	Object       string                       `json:"object"`
+	Created      int64                        `json:"created"`
+	Model        string                       `json:"model"`
+	Choices      []ChatCompletionStreamChoice `json:"choices"`
+	Usage        *Usage                       `json:"usage,omitempty"`
+	LatencyTrace LatencyTrace                 `json:"latency_trace"`
 }
 
 type ChatCompletionStreamChoice struct {
@@ -80,6 +82,11 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+type LatencyTrace struct {
+	MockRequestStartMs  int64 `json:"mock_request_start_ms"`
+	MockResponseStartMs int64 `json:"mock_response_start_ms"`
 }
 
 type ModelList struct {
@@ -133,12 +140,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	requestStartedAtMs := time.Now().UnixMilli()
+
 	if req.Stream {
-		handleStreamChat(w, req)
+		handleStreamChat(w, req, requestStartedAtMs)
 		return
 	}
 
 	now := time.Now().Unix()
+	responseStartedAtMs := time.Now().UnixMilli()
 	resp := ChatCompletionResponse{
 		ID:      fmt.Sprintf("chatcmpl-mock-%d", now),
 		Object:  "chat.completion",
@@ -159,13 +169,17 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			CompletionTokens: 9,
 			TotalTokens:      19,
 		},
+		LatencyTrace: LatencyTrace{
+			MockRequestStartMs:  requestStartedAtMs,
+			MockResponseStartMs: responseStartedAtMs,
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
-func handleStreamChat(w http.ResponseWriter, req ChatCompletionRequest) {
+func handleStreamChat(w http.ResponseWriter, req ChatCompletionRequest, requestStartedAtMs int64) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
@@ -177,14 +191,20 @@ func handleStreamChat(w http.ResponseWriter, req ChatCompletionRequest) {
 	w.Header().Set("Connection", "keep-alive")
 
 	now := time.Now().Unix()
+	responseStartedAtMs := time.Now().UnixMilli()
 	id := fmt.Sprintf("chatcmpl-mock-%d", now)
+	trace := LatencyTrace{
+		MockRequestStartMs:  requestStartedAtMs,
+		MockResponseStartMs: responseStartedAtMs,
+	}
 
 	// First chunk: role
 	sendSSE(w, flusher, ChatCompletionStreamResponse{
-		ID:      id,
-		Object:  "chat.completion.chunk",
-		Created: now,
-		Model:   req.Model,
+		ID:           id,
+		Object:       "chat.completion.chunk",
+		Created:      now,
+		Model:        req.Model,
+		LatencyTrace: trace,
 		Choices: []ChatCompletionStreamChoice{
 			{
 				Index: 0,
@@ -201,10 +221,11 @@ func handleStreamChat(w http.ResponseWriter, req ChatCompletionRequest) {
 			content += " "
 		}
 		sendSSE(w, flusher, ChatCompletionStreamResponse{
-			ID:      id,
-			Object:  "chat.completion.chunk",
-			Created: now,
-			Model:   req.Model,
+			ID:           id,
+			Object:       "chat.completion.chunk",
+			Created:      now,
+			Model:        req.Model,
+			LatencyTrace: trace,
 			Choices: []ChatCompletionStreamChoice{
 				{
 					Index: 0,
@@ -217,10 +238,11 @@ func handleStreamChat(w http.ResponseWriter, req ChatCompletionRequest) {
 	// Final chunk: finish_reason + usage
 	stop := "stop"
 	sendSSE(w, flusher, ChatCompletionStreamResponse{
-		ID:      id,
-		Object:  "chat.completion.chunk",
-		Created: now,
-		Model:   req.Model,
+		ID:           id,
+		Object:       "chat.completion.chunk",
+		Created:      now,
+		Model:        req.Model,
+		LatencyTrace: trace,
 		Choices: []ChatCompletionStreamChoice{
 			{
 				Index:        0,
